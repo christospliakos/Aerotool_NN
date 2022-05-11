@@ -8,12 +8,15 @@ import scipy.special
 from scipy.optimize import minimize
 
 
+# TODO: Find upper and lower curves.
 # TODO: Find leading edge radius
 # TODO: Find if trailing edge is closed
 # TODO: Close trailing edge if wanted
 # TODO: Reformat with new x (cosine/linear)
 # TODO: Return bezier control points that match the airfoil as well as possible
 # TODO: Get Polars from XFOIL?
+# TODO: Extend polars to 180-360 deg
+
 
 class AirfoilBezier:
 
@@ -147,50 +150,44 @@ class Airfoil:
         Then it returns the X and Y coordinates of both curves.
         :return:
         """
-        # print(self.x.shape)
-        # print(self.x.shape[0])
         midIndex = self.x.shape[0] // 2
 
-        if self.x[midIndex] <= 1e-5:
+        if self.x[midIndex] <= 1e-5 and midIndex % 2 == 0:
             pass
         else:
             midIndex = np.argmin(self.x)
-            print("test")
 
-        # print(self.x[midIndex:])
-        # print(self.x[:midIndex])
+        upper = np.array([self.x[:midIndex + 1][::-1], self.y[:midIndex + 1][::-1]])
+        lower = np.array([self.x[midIndex:], self.y[midIndex:]])
 
-        upper = [self.x[:midIndex + 1][::-1], self.y[:midIndex + 1][::-1]]
-        lower = [self.x[midIndex:], self.y[midIndex:]]
+        # TODO: If not all x points of upper and lower curves match EXACTLY, find a way to fit new curves to those.
+        if not np.array_equal(upper[0, :], lower[0, :]):
+            print("The airfoil needs a re-fit in order to extract the upper and lower curves")
+            pointsSpacing = max(upper.shape[1], lower.shape[1])  # 100 points
+            newSpacing = np.array(self.create_new_spacing(N=pointsSpacing,
+                                                          minimumX=0.00,
+                                                          inplace=False))
+            # TODO: FIX THE FIRST AND LAST POINT MAYBE?
+            upper = self.create_new_curves(upper[0, :], newSpacing, upper[1, :])
+            lower = self.create_new_curves(lower[0, :], newSpacing, lower[1, :])
 
-        upper[0], removeIndexUpper = self.__check_duplicates_in_array(upper[0], treatment="remove")
-        upper[1], _ = self.__check_duplicates_in_array(upper[1], treatment="remove", indexToRemove=removeIndexUpper)
+            lower[1, 0] = upper[1, 0]
+        else:
+            print("The airfoil is fine")
 
-        lower[0], removeIndexLower = self.__check_duplicates_in_array(lower[0], treatment="remove")
-        lower[1], _ = self.__check_duplicates_in_array(lower[1], treatment="remove", indexToRemove=removeIndexLower)
+        # upper[0], removeIndexUpper = self.__check_duplicates_in_array(upper[0], treatment="remove")
+        # upper[1], _ = self.__check_duplicates_in_array(upper[1], treatment="remove", indexToRemove=removeIndexUpper)
+        #
+        # lower[0], removeIndexLower = self.__check_duplicates_in_array(lower[0], treatment="remove")
+        # lower[1], _ = self.__check_duplicates_in_array(lower[1], treatment="remove", indexToRemove=removeIndexLower)
 
         self.upper_coors, self.lower_coors = upper, lower
-
-        # if self.upper_coors[0].shape != self.lower_coors[0].shape:
-        #     # print(self.upper_coors[0].shape)
-        #     # print(self.lower_coors[0].shape)
-        #     # print("test")
-        #     self.create_new_spacing(N=min([self.upper_coors[0].shape, self.lower_coors[0].shape])[0],
-        #                             minimumX=min(self.upper_coors[0]),
-        #                             inplace=True)
 
     def __get_thickness_line(self):
         """
         It calculates the thickness distribution along the chord
-        :return:
+        :return: Returns a tuple of two np.ndarrays for the X coordinate and the thickness line
         """
-        xSpacing = np.linspace(0, 1, 101)
-        upper = np.interp(xSpacing,
-                          self.upper_coors[0],
-                          self.upper_coors[1]).T
-        lower = np.interp(xSpacing,
-                          self.lower_coors[0],
-                          self.lower_coors[1]).T
 
         return self.upper_coors[0], self.upper_coors[1] - self.lower_coors[1]
 
@@ -202,20 +199,13 @@ class Airfoil:
         """
         thicknessDistribution = self.thicknessLine[1]
         maxThicknessIndex = np.argmax(thicknessDistribution)
-        return np.max(thicknessDistribution), 100 * self.upper_coors[0][maxThicknessIndex]
+        return np.max(thicknessDistribution), 100 * self.upper_coors[0][maxThicknessIndex], maxThicknessIndex
 
     def __get_camber_line(self):
         """
         It calculates the camber line of the airfoil by finding the middle point for each section.
         :return: Returns a tuple of two np.ndarray for the X coordinate and the camber line.
         """
-        # xSpacing = np.linspace(0, 1, 101)
-        # upper = np.interp(xSpacing,
-        #                   self.upper_coors[0],
-        #                   self.upper_coors[1]).T
-        # lower = np.interp(xSpacing,
-        #                   self.lower_coors[0],
-        #                   self.lower_coors[1]).T
 
         return self.upper_coors[0], (self.upper_coors[1] + self.lower_coors[1]) / 2
 
@@ -253,13 +243,16 @@ class Airfoil:
     def __set_main_characteristics(self):
         self.chord = round(self.x.max() - self.x.min(), 2)
 
-        # plt.plot(self.x, self.y, '-*', label="Original")
-
         self.__get_upper_lowers_coors()
         self.camberLine = self.__get_camber_line()
         self.thicknessLine = self.__get_thickness_line()
-        self.maximumThickness, self.maximumThicknessLocation = self.__get_maximum_thickness_and_position()
+        self.maximumThickness, self.maximumThicknessLocation, self.maximumThicknessIndex = self.__get_maximum_thickness_and_position()
         self.maximumCamber, self.maximumCamberLocation = self.__get_maximum_camber_and_position()
+        print(self.maximumCamberLocation)
+        print(self.maximumCamber)
+        #
+        # plt.axis('equal')
+        # plt.show()
 
     @staticmethod
     def __check_duplicates_in_array(pointArray: np.ndarray, treatment: str = "keep", indexToRemove: int = None):
@@ -323,33 +316,42 @@ class Airfoil:
                                   np.linspace(0.2, 0.8, desiredSpacing[1]),
                                   np.linspace(0.8, 1.0, desiredSpacing[2])))
 
-        newY = self.create_new_y_curves(xPoints=xSpacing)
-        newX = np.concatenate((xSpacing[::-1], xSpacing), axis=0)
-        if not inplace:
-            return newX, newY
-        else:
-            self.x = newX
-            self.y = newY
-            self.__set_main_characteristics()
+        return xSpacing
 
-    def create_new_y_curves(self, xPoints: np.ndarray):
-        """
-        It uses an 1d interpolation and more specifically the cubic interpolation to create a model/approximation
-        for the upper and lower curves. After that it uses the xPoints to re-create the curves
-        :param xPoints: The desired X spacing
-        :return: Concatenated the y curves as one.
-        """
+    @staticmethod
+    def create_new_curves(originalX: np.ndarray, newX: np.ndarray, originalY: np.ndarray):
 
-        upperCoordsCleanX, _ = self.__check_duplicates_in_array(np.copy(self.upper_coors[0]), treatment="keep")
-        lowerCoordsCleanX, _ = self.__check_duplicates_in_array(np.copy(self.lower_coors[0]), treatment="keep")
+        interpolationFunction = Airfoil.interpolation_function(originalX, originalY)
+        newY = interpolationFunction(newX)
+        return np.array([newX, newY])
 
-        f_up = interpolate.interp1d(upperCoordsCleanX, self.upper_coors[1], kind="cubic", fill_value="extrapolate")
-        f_low = interpolate.interp1d(lowerCoordsCleanX, self.lower_coors[1], kind="cubic", fill_value="extrapolate")
+    @staticmethod
+    def interpolation_function(X: np.ndarray, Y: np.ndarray):
+        # TODO: Check for duplicates
+        return interpolate.interp1d(X, Y, fill_value="extrapolate")
 
-        newYUpper = f_up(xPoints)[::-1]
-        newYLower = f_low(xPoints)
+    @staticmethod
+    def create_Y_from_fX(X: np.ndarray, fX):
+        return fX(X)
 
-        return np.concatenate((newYUpper, newYLower), axis=0)
+    # def create_new_y_curves(self, xPoints: np.ndarray):
+    #     """
+    #     It uses an 1d interpolation and more specifically the cubic interpolation to create a model/approximation
+    #     for the upper and lower curves. After that it uses the xPoints to re-create the curves
+    #     :param xPoints: The desired X spacing
+    #     :return: Concatenated the y curves as one.
+    #     """
+    #
+    #     upperCoordsCleanX, _ = self.__check_duplicates_in_array(np.copy(self.upper_coors[0]), treatment="keep")
+    #     lowerCoordsCleanX, _ = self.__check_duplicates_in_array(np.copy(self.lower_coors[0]), treatment="keep")
+    #
+    #     f_up = interpolate.interp1d(upperCoordsCleanX, self.upper_coors[1], kind="cubic", fill_value="extrapolate")
+    #     f_low = interpolate.interp1d(lowerCoordsCleanX, self.lower_coors[1], kind="cubic", fill_value="extrapolate")
+    #
+    #     newYUpper = f_up(xPoints)[::-1]
+    #     newYLower = f_low(xPoints)
+    #
+    #     return np.concatenate((newYUpper, newYLower), axis=0)
 
     def get_polars(self,
                    Reynolds: float = 1e6,
@@ -403,7 +405,6 @@ class Airfoil:
         # plt.plot((0, 1), (self.lower_coors[1][0], self.lower_coors[1][-1]), '-o')
         self.plot_airfoil([airfoilX, airfoilY])
 
-
         print("test")
 
     def save_airfoil(self, path: str, name: str):
@@ -429,10 +430,11 @@ class Airfoil:
             plt.plot(self.lower_coors[0], self.lower_coors[1], 'k--', label='Lower Surface')
             plt.plot(self.camberLine[0], self.camberLine[1], 'y--', label='Camber Line')
             plt.vlines(x=self.maximumThicknessLocation / 100,
-                       ymin=self.lower_coors[1][np.argmax(self.upper_coors[1])],
-                       ymax=self.upper_coors[1].max(), color='r',
+                       ymin=self.lower_coors[1][self.maximumThicknessIndex],
+                       ymax=self.upper_coors[1][self.maximumThicknessIndex], color='r',
                        label=f'Maximum Thickness {round(100 * self.maximumThickness, 2)}%'
                              f' at {round(self.maximumThicknessLocation, 2)}%')
+            plt.title(self.airfoilName)
         else:
             plt.plot(self.x, self.y, 'o-', ms=4, label='Original')
             plt.plot(otherAirfoil[0], otherAirfoil[1], color='r', label='New Airfoil')
@@ -445,7 +447,10 @@ class Airfoil:
 
 if __name__ == "__main__":
     # 1st case with airfoil name
-    airfoil_name = "naca0015"
+    # airfoil_name = "mh102"
+    # airfoil_name = "mh112"
+    # airfoil_name = "a18"
+    airfoil_name = "e342"
     airfoil = Airfoil(airfoilName=airfoil_name)
 
     # 2nd case with airfoil coords
@@ -461,7 +466,7 @@ if __name__ == "__main__":
 
     # Visualizing
     # airfoil.plot_airfoil()
-#
+    #
     airfoil.create_new_spacing(N=100, inplace=True)
 
     # airfoil.get_bezier_control_points(noOfPoints=100,
@@ -475,4 +480,3 @@ if __name__ == "__main__":
     airfoil.plot_airfoil()
 
     ###############
-
