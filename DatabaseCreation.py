@@ -2,7 +2,7 @@ import numpy as np
 import os
 import pandas as pd
 import matplotlib.pyplot as plt
-from XFOIL_Compare import Xfoil_Runner
+from XFOIL_Solver import Xfoil_Runner
 
 
 def clean_data(angleOfAttack, liftCoefficient, dragCoefficient, momentCoefficient):

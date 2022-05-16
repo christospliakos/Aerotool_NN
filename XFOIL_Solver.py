@@ -110,7 +110,7 @@ if __name__ == "__main__":
     ############################################################################################
 
     this_path = os.getcwd()
-    airfoils_dir = os.path.join(this_path, "newAirfoils_cosine2")
+    airfoils_dir = os.path.join(this_path, "newAirfoils_cosine3")
     number_of_airfoils = len(os.listdir(airfoils_dir))
     names = [foil.replace('.dat', '') for foil in os.listdir(airfoils_dir)]
 
@@ -136,4 +136,4 @@ if __name__ == "__main__":
     df['names'] = names
     print(df.head(50))
 
-    df.to_excel("Airfoil_Database_new.xlsx")
+    df.to_excel("Airfoil_Database_cosine3_selig_500000.xlsx")

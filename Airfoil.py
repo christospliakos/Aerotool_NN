@@ -3,10 +3,14 @@ import matplotlib.pyplot as plt
 from typing import Union
 import os
 from scipy import interpolate
+import scipy.interpolate
 from xfoil import XFoil
 import scipy.special
 from scipy.optimize import minimize
-
+import warnings
+from xfoil import XFoil
+from xfoil.model import Airfoil as XFoilAirfoil
+import pandas as pd
 
 # TODO: Find upper and lower curves.
 # TODO: Find leading edge radius
@@ -14,9 +18,7 @@ from scipy.optimize import minimize
 # TODO: Close trailing edge if wanted
 # TODO: Reformat with new x (cosine/linear)
 # TODO: Return bezier control points that match the airfoil as well as possible
-# TODO: Get Polars from XFOIL?
 # TODO: Extend polars to 180-360 deg
-
 
 class AirfoilBezier:
 
@@ -99,7 +101,7 @@ class Airfoil:
             self.__normalize_coors_based_on_chord()
             self.__check_validity_of_preloaded_coors()
 
-        self.__set_main_characteristics()
+        # self.__set_main_characteristics()
 
         # self.leadingEdgeRadius = self.__get_leading_edge_radius()
 
@@ -126,7 +128,7 @@ class Airfoil:
             raise Exception("The airfoil coordinates are not in the correct order/form.")
 
         # This means that the airfoil coords start/end from/at the trailing edge
-        if (abs(self.x[0] - 1.00) <= 1e-6) and (abs(self.y[0] - 1.00) <= 1e-6):
+        if (abs(self.x[0] - 1.00) <= 1e-6) and (abs(self.x[-1] - 1.00) <= 1e-6):
             pass
         else:
             raise Exception("The airfoil coordinates are not in the correct order/form. They should start and finish"
@@ -142,7 +144,7 @@ class Airfoil:
         self.x / chordLine
         self.y / chordLine
 
-    def __get_upper_lowers_coors(self):
+    def __get_upper_lowers_coors(self, xSpacing=None, inplace=True):
         """
         Finds the index where the coordinates change from suction side to pressure side.
         Firstly it assumes that the index where the change of sides happen is right at the middle, but if this fails
@@ -159,29 +161,51 @@ class Airfoil:
 
         upper = np.array([self.x[:midIndex + 1][::-1], self.y[:midIndex + 1][::-1]])
         lower = np.array([self.x[midIndex:], self.y[midIndex:]])
+        # plt.plot(upper[0], upper[1], color='red')
+        # plt.plot(lower[0], lower[1], color='blue')
+        # plt.axis('equal')
+        # plt.show()
+
+        if abs(upper[1, -1] - lower[1, -1]) <= 1e-4:
+            closedTrailingEdge = True
+        else:
+            closedTrailingEdge = False
+
+        newSpacing = None
 
         # TODO: If not all x points of upper and lower curves match EXACTLY, find a way to fit new curves to those.
-        if not np.array_equal(upper[0, :], lower[0, :]):
-            print("The airfoil needs a re-fit in order to extract the upper and lower curves")
-            pointsSpacing = max(upper.shape[1], lower.shape[1])  # 100 points
-            newSpacing = np.array(self.create_new_spacing(N=pointsSpacing,
-                                                          minimumX=0.00,
-                                                          inplace=False))
-            # TODO: FIX THE FIRST AND LAST POINT MAYBE?
-            upper = self.create_new_curves(upper[0, :], newSpacing, upper[1, :])
-            lower = self.create_new_curves(lower[0, :], newSpacing, lower[1, :])
-
-            lower[1, 0] = upper[1, 0]
+        if xSpacing is not None:
+            newSpacing = xSpacing
         else:
-            print("The airfoil is fine")
+            if not np.array_equal(upper[0, :], lower[0, :]):
+                print("The airfoil needs a re-fit in order to extract the upper and lower curves")
+                maxDimension = max(upper.shape[1], lower.shape[1])
+                if maxDimension % 2 != 0:
+                    maxDimension += 1
+                pointsSpacing = maxDimension
+                newSpacing = np.array(self.__create_new_X_spacing(N=pointsSpacing,
+                                                                  minimumX=0.00,
+                                                                  spacingDist="cosine"))
+            else:
+                print("The airfoil is fine")
+        if newSpacing is not None:
+            upper = self.__create_new_curves(upper[0, :], newSpacing, upper[1, :])
+            lower = self.__create_new_curves(lower[0, :], newSpacing, lower[1, :])
 
-        # upper[0], removeIndexUpper = self.__check_duplicates_in_array(upper[0], treatment="remove")
-        # upper[1], _ = self.__check_duplicates_in_array(upper[1], treatment="remove", indexToRemove=removeIndexUpper)
-        #
-        # lower[0], removeIndexLower = self.__check_duplicates_in_array(lower[0], treatment="remove")
-        # lower[1], _ = self.__check_duplicates_in_array(lower[1], treatment="remove", indexToRemove=removeIndexLower)
+            middleLeadingEdgePoint = (lower[1, 0] + upper[1, 0]) / 2
+            lower[1, 0] = middleLeadingEdgePoint
+            upper[1, 0] = middleLeadingEdgePoint
 
-        self.upper_coors, self.lower_coors = upper, lower
+            if closedTrailingEdge:
+                middlePoint = (lower[1, -1] + upper[1, -1]) / 2
+                lower[1, -1] = middlePoint
+                upper[1, -1] = middlePoint
+
+        if inplace:
+            self.upper_coors, self.lower_coors = upper, lower
+            self.x, self.y = np.concatenate((upper[0, ::-1], lower[0, :])), np.concatenate((upper[1, ::-1], lower[1, :]))
+        else:
+            return upper, lower
 
     def __get_thickness_line(self):
         """
@@ -240,19 +264,15 @@ class Airfoil:
 
         return None
 
-    def __set_main_characteristics(self):
+    def __set_main_characteristics(self, passCurveFit=False):
         self.chord = round(self.x.max() - self.x.min(), 2)
 
-        self.__get_upper_lowers_coors()
+        if not passCurveFit:
+            self.__get_upper_lowers_coors()
         self.camberLine = self.__get_camber_line()
         self.thicknessLine = self.__get_thickness_line()
         self.maximumThickness, self.maximumThicknessLocation, self.maximumThicknessIndex = self.__get_maximum_thickness_and_position()
         self.maximumCamber, self.maximumCamberLocation = self.__get_maximum_camber_and_position()
-        print(self.maximumCamberLocation)
-        print(self.maximumCamber)
-        #
-        # plt.axis('equal')
-        # plt.show()
 
     @staticmethod
     def __check_duplicates_in_array(pointArray: np.ndarray, treatment: str = "keep", indexToRemove: int = None):
@@ -287,10 +307,10 @@ class Airfoil:
                     pointArray = np.delete(pointArray, index_dup)
         return pointArray, index_dup
 
-    def create_new_spacing(self, N: Union[int, float] = 100,
-                           minimumX: float = 0.00,
-                           desiredSpacing: Union[list, np.ndarray] = None,
-                           inplace: bool = True):
+    def __create_new_X_spacing(self, N: Union[int, float] = 100,
+                               minimumX: float = 0.00,
+                               desiredSpacing: Union[list, np.ndarray] = None,
+                               spacingDist: str = "cosine"):
         """
         Creates a new spacing for x points. That means that the upper and lower curves are being generated again.
         By default it uses cosine scheme, unless the user provides a specific X spacing.
@@ -301,37 +321,57 @@ class Airfoil:
                                match N
         :param inplace: If True the current airfoil object is getting affected, if False a tuple of X and Y is being
                         returned.
+        :param spacingDist: Expecting the way that the 0-1 range will be divided. Options: linear/cosine/custom.
+                            Linear used np.linspace, cosine uses np.cos while custom SHOULD be accompanied with
+                            desiredSpacing variable. By default it uses cosine.
         :return: Returns new X/Y np.arrays if inplace is True
         """
-        if desiredSpacing is None:
-            deltaPhi = np.pi / (2 * (N - 1))
-            steps = np.cos(np.arange(0, N) * deltaPhi)
-            xSpacing = 1 - steps
-        else:
-            desiredSpacing = np.array(desiredSpacing) if isinstance(desiredSpacing, list) else desiredSpacing
-            if desiredSpacing.sum() != N:
-                raise Warning("The number of points in desiredSpacing doesn't sum up to N")
+        while True:
+            if spacingDist == "cosine":
+                deltaPhi = np.pi / (2 * (N - 1))
+                steps = np.cos(np.arange(0, N) * deltaPhi)
+                xSpacing = 1 - steps
+            elif spacingDist == "custom":
+                if desiredSpacing is None:
+                    warnings.warn("Since desiredSpacing is not specified, cosine spacing will be used instead")
+                    spacingDist = "cosine"
+                    continue
+                desiredSpacing = np.array(desiredSpacing) if isinstance(desiredSpacing, list) else desiredSpacing
+                if desiredSpacing.sum() != N:
+                    raise Warning("The number of points in desiredSpacing doesn't sum up to N")
 
-            xSpacing = np.hstack((np.linspace(0, 0.2, desiredSpacing[0]),
-                                  np.linspace(0.2, 0.8, desiredSpacing[1]),
-                                  np.linspace(0.8, 1.0, desiredSpacing[2])))
+                xSpacing = np.hstack((np.linspace(0, 0.2, desiredSpacing[0]),
+                                      np.linspace(0.2, 0.8, desiredSpacing[1]),
+                                      np.linspace(0.8, 1.0, desiredSpacing[2])))
+            else:
+                xSpacing = np.linspace(0.00, 1.00, N)
 
-        return xSpacing
+            return xSpacing
 
     @staticmethod
-    def create_new_curves(originalX: np.ndarray, newX: np.ndarray, originalY: np.ndarray):
+    def __create_new_curves(originalX: np.ndarray, newX: np.ndarray, originalY: np.ndarray):
 
-        interpolationFunction = Airfoil.interpolation_function(originalX, originalY)
-        newY = interpolationFunction(newX)
+        idx = np.insert(np.diff(originalX).astype(bool), 0, True)
+        originalX = originalX[idx]
+        originalY = originalY[idx]
+        spline = scipy.interpolate.splrep(originalX, originalY, s=0.000005)
+        newY = scipy.interpolate.splev(newX, spline)
+
+        # ius = scipy.interpolate.InterpolatedUnivariateSpline(originalX, originalY)
+        # newY = ius(newX)
+
+        # interpolationFunction = Airfoil.__interpolation_function(originalX, originalY)
+        # newY = interpolationFunction(newX)
         return np.array([newX, newY])
 
     @staticmethod
-    def interpolation_function(X: np.ndarray, Y: np.ndarray):
+    def __interpolation_function(X: np.ndarray, Y: np.ndarray):
         # TODO: Check for duplicates
-        return interpolate.interp1d(X, Y, fill_value="extrapolate")
+        # spline, u = scipy.interpolate.splrep(X, Y)
+        return interpolate.interp1d(X, Y, fill_value="extrapolate", kind='quadratic')
 
     @staticmethod
-    def create_Y_from_fX(X: np.ndarray, fX):
+    def __create_Y_from_fX(X: np.ndarray, fX):
         return fX(X)
 
     # def create_new_y_curves(self, xPoints: np.ndarray):
@@ -353,14 +393,61 @@ class Airfoil:
     #
     #     return np.concatenate((newYUpper, newYLower), axis=0)
 
+    def get_new_points_distribution(self,
+                                    N: Union[float, int] = 100,
+                                    spacingDist: str = "cosine",
+                                    inplace: bool = True):
+
+        xSpacing = self.__create_new_X_spacing(N=N, spacingDist=spacingDist)
+        self.__get_upper_lowers_coors(xSpacing, inplace=inplace)
+        if inplace:
+            self.__set_main_characteristics(passCurveFit=True)
+
     def get_polars(self,
                    Reynolds: float = 1e6,
                    Mach: float = 0,
                    nCrit: int = 9,
                    angleOfAttack: Union[int, list, np.ndarray] = 0,
+                   save: bool = False,
+                   display: bool = False,
+                   path: str = None
                    ):
-        # TODO: Finish this
-        pass
+
+        airfoilObj = XFoilAirfoil(self.x, self.y)
+        xfoilInstance = XFoil()
+
+        xfoilInstance.print = False
+        xfoilInstance.airfoil = airfoilObj
+        # xfoilInstance.filter(factor=0.2)
+        xfoilInstance.repanel()
+        xfoilInstance.M = Mach
+        xfoilInstance.Re = Reynolds
+        xfoilInstance.max_iter = 100
+        xfoilInstance.n_crit = nCrit
+
+        if isinstance(angleOfAttack, int):
+            liftCoefficient, dragCoefficient, momentCoefficient, pressureCoefficient = xfoilInstance.a(angleOfAttack)
+            a = angleOfAttack
+        elif isinstance(angleOfAttack, (list, np.ndarray)):
+            startingAoA = angleOfAttack[0]
+            lastAoA = angleOfAttack[-1]
+            step = angleOfAttack[1] - angleOfAttack[0]
+            a, liftCoefficient, dragCoefficient, momentCoefficient, pressureCoefficient = xfoilInstance.aseq(startingAoA, lastAoA, step)
+
+        if display:
+            print(f"Angle(s) of attack:   {angleOfAttack},"
+                  f"Lift coefficient:     {liftCoefficient},"
+                  f"Drag coefficient:     {dragCoefficient},"
+                  f"Moment coefficient:   {momentCoefficient},"
+                  f"Pressure coefficient: {pressureCoefficient}")
+
+        if save and path:
+            dataArray = np.array([a, liftCoefficient, dragCoefficient, momentCoefficient, pressureCoefficient]).T
+            print(dataArray.shape)
+            df = pd.DataFrame(dataArray, columns=['AoA', 'Cl', 'Cd', 'Cm', 'Cp'])
+            if '.xlsx' not in path:
+                path = path + '.xlsx'
+            df.to_excel(path, index=False)
 
     def get_bezier_control_points(self,
                                   noOfPoints: int = 100,
@@ -450,24 +537,26 @@ if __name__ == "__main__":
     # airfoil_name = "mh102"
     # airfoil_name = "mh112"
     # airfoil_name = "a18"
-    airfoil_name = "e342"
-    airfoil = Airfoil(airfoilName=airfoil_name)
-
-    # 2nd case with airfoil coords
-
-    # x_, y_ = np.loadtxt("coord_seligFmt/a18.dat", unpack=True, skiprows=1, usecols=[0, 1])
-    # x_ = [0.0, 0.0125, 0.025, 0.05, 0.075, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.7, 0.8, 0.9,
-    #       0.95, 1.0, 1.0, 0.95, 0.9, 0.8, 0.7, 0.6, 0.55, 0.5, 0.45, 0.4, 0.35, 0.3, 0.25, 0.2, 0.15, 0.1, 0.075,
-    #       0.05, 0.025, 0.0125, ]
-    # y_ = [y_[i] for i in range(y_.shape[0])]
+    # airfoil_name = "e342"
+    # airfoil = Airfoil(airfoilName=airfoil_name)
     #
-    # print(x_, y_)
-    # airfoil = Airfoil(x=x_, y=y_)
-
-    # Visualizing
-    # airfoil.plot_airfoil()
+    # # 2nd case with airfoil coords
     #
-    airfoil.create_new_spacing(N=100, inplace=True)
+    # # x_, y_ = np.loadtxt("coord_seligFmt/a18.dat", unpack=True, skiprows=1, usecols=[0, 1])
+    # # x_ = [0.0, 0.0125, 0.025, 0.05, 0.075, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.7, 0.8, 0.9,
+    # #       0.95, 1.0, 1.0, 0.95, 0.9, 0.8, 0.7, 0.6, 0.55, 0.5, 0.45, 0.4, 0.35, 0.3, 0.25, 0.2, 0.15, 0.1, 0.075,
+    # #       0.05, 0.025, 0.0125, ]
+    # # y_ = [y_[i] for i in range(y_.shape[0])]
+    # #
+    # # print(x_, y_)
+    # # airfoil = Airfoil(x=x_, y=y_)
+    #
+    # # Visualizing
+    # # airfoil.plot_airfoil()
+    # #
+    # print(airfoil.upper_coors.shape)
+    # airfoil.get_new_points_distribution(N=80, spacingDist="cosine", inplace=True)
+    # print(airfoil.upper_coors.shape)
 
     # airfoil.get_bezier_control_points(noOfPoints=100,
     #                                   noOfControlPoints=6)
@@ -477,6 +566,77 @@ if __name__ == "__main__":
 
     # airfoil.save_airfoil("TestingAirfoils", "clarkyNew")
     #
-    airfoil.plot_airfoil()
+    # airfoil.plot_airfoil()
 
     ###############
+
+    airfoilInterest = "mh102"
+    airfoil = Airfoil(airfoilName=airfoilInterest)
+    airfoil.get_polars(Reynolds=1e6, save=True, angleOfAttack=np.arange(-10, 10, 1), path="mh102_Original.xlsx")
+    airfoil.get_new_points_distribution(N=80)
+    airfoil.get_polars(Reynolds=1e6, save=True, angleOfAttack=np.arange(-10, 10, 1), path="mh102_New.xlsx")
+
+    # for i, file in enumerate(os.listdir('coord_seligFmt')):
+    #     print(file)
+    #     airfoil = Airfoil(airfoilName=file)
+    #     airfoil.get_new_points_distribution(N=80, spacingDist="cosine", inplace=True)
+    #     airfoil.save_airfoil(path="newAirfoils_cosine3", name=file[:-4])
+    #     # if i == 1000:
+    #     #     break
+    #
+    # ###
+    # availableFoils = os.listdir("newAirfoils_cosine3")
+    # indx = np.random.randint(0, len(availableFoils) - 1, 4)
+    # fig, axs = plt.subplots(2, 2)
+    # airfoilOfInterest = availableFoils[indx[0]][:-4]
+    # originalAirfoil = f"coord_seligFmt/{airfoilOfInterest}.dat"
+    # newAirfoil = f"newAirfoils_cosine3/{airfoilOfInterest}.dat"
+    #
+    # x1, y1 = np.loadtxt(originalAirfoil, unpack=True, usecols=[0, 1], skiprows=1)
+    # x2, y2 = np.loadtxt(newAirfoil, unpack=True, usecols=[0, 1])
+    #
+    # axs[0, 0].plot(x1, y1, '-*', color='blue', label='original')
+    # axs[0, 0].plot(x2, y2, '-^', color='red', label='new')
+    # axs[0, 0].axis('equal')
+    # axs[0, 0].set_title(airfoilOfInterest)
+    # axs[0, 0].legend()
+    #
+    # airfoilOfInterest = availableFoils[indx[1]][:-4]
+    # originalAirfoil = f"coord_seligFmt/{airfoilOfInterest}.dat"
+    # newAirfoil = f"newAirfoils_cosine3/{airfoilOfInterest}.dat"
+    #
+    # x1, y1 = np.loadtxt(originalAirfoil, unpack=True, usecols=[0, 1], skiprows=1)
+    # x2, y2 = np.loadtxt(newAirfoil, unpack=True, usecols=[0, 1])
+    #
+    # axs[0, 1].plot(x1, y1, '-*', color='blue', label='original')
+    # axs[0, 1].plot(x2, y2, '-^', color='red', label='new')
+    # axs[0, 1].axis('equal')
+    # axs[0, 1].set_title(airfoilOfInterest)
+    # axs[0, 1].legend()
+    #
+    # airfoilOfInterest = availableFoils[indx[2]][:-4]
+    # originalAirfoil = f"coord_seligFmt/{airfoilOfInterest}.dat"
+    # newAirfoil = f"newAirfoils_cosine3/{airfoilOfInterest}.dat"
+    #
+    # x1, y1 = np.loadtxt(originalAirfoil, unpack=True, usecols=[0, 1], skiprows=1)
+    # x2, y2 = np.loadtxt(newAirfoil, unpack=True, usecols=[0, 1])
+
+    # axs[1, 0].plot(x1, y1, '-*', color='blue', label='original')
+    # axs[1, 0].plot(x2, y2, '-^', color='red', label='new')
+    # axs[1, 0].axis('equal')
+    # axs[1, 0].set_title(airfoilOfInterest)
+    # axs[1, 0].legend()
+    #
+    # airfoilOfInterest = availableFoils[indx[3]][:-4]
+    # originalAirfoil = f"coord_seligFmt/{airfoilOfInterest}.dat"
+    # newAirfoil = f"newAirfoils_cosine3/{airfoilOfInterest}.dat"
+    #
+    # x1, y1 = np.loadtxt(originalAirfoil, unpack=True, usecols=[0, 1], skiprows=1)
+    # x2, y2 = np.loadtxt(newAirfoil, unpack=True, usecols=[0, 1])
+    #
+    # axs[1, 1].plot(x1, y1, '-*', color='blue', label='original')
+    # axs[1, 1].plot(x2, y2, '-^', color='red', label='new')
+    # axs[1, 1].axis('equal')
+    # axs[1, 1].set_title(airfoilOfInterest)
+    # axs[1, 1].legend()
+    # plt.show()
